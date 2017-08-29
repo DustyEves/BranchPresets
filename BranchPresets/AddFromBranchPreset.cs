@@ -4,6 +4,9 @@ using Sitecore.Data.Items;
 using Sitecore.Diagnostics;
 using Sitecore.Pipelines.ItemProvider.AddFromTemplate;
 using Sitecore.StringExtensions;
+using System.Linq;
+using Sitecore.Layouts;
+using Sitecore.Data;
 
 namespace BranchPresets
 {
@@ -16,7 +19,7 @@ namespace BranchPresets
 	{
 		public override void Process(AddFromTemplateArgs args)
 		{
-			Assert.ArgumentNotNull(args, nameof(args));
+			//Assert.ArgumentNotNull(args, nameof(args));
 
 			if (args.Destination.Database.Name != "master") return;
 
@@ -39,6 +42,37 @@ namespace BranchPresets
 			args.Result = newItem;
 		}
 
+        protected virtual void RewriteRulesDataSources(Item item, RenderingDefinition _rendering, string branchBasePath)
+        {
+            //rendering.Rules.Descendants().First().Descendants("actions")
+            if (_rendering.Rules == null || !_rendering.Rules.Descendants().Any())
+                return;
+
+            foreach(var rule in _rendering.Rules.Elements("rule"))
+            {
+                var datasource = rule.Element("actions").Element("action").Attribute("DataSource");
+                var renderingTargetItem = item.Database.GetItem(new ID(datasource.Value));
+
+                if (renderingTargetItem == null || !renderingTargetItem.Paths.FullPath.StartsWith(branchBasePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var relativeRenderingPath = renderingTargetItem.Paths.FullPath.Substring(branchBasePath.Length).TrimStart('/');
+
+
+                if (relativeRenderingPath == "$name")
+                {
+                    datasource.SetValue(item.ID.ToString());
+                    continue;
+                }
+
+                relativeRenderingPath = relativeRenderingPath.Substring(relativeRenderingPath.IndexOf('/')); // we need to skip the "/$name" at the root of the branch children
+                var newTargetPath = item.Paths.FullPath + relativeRenderingPath;
+                var newTargetItem = item.Database.GetItem(newTargetPath);
+                datasource.SetValue(newTargetItem.ID.ToString());
+            }
+            
+        }
+
 		protected virtual void RewriteBranchRenderingDataSources(Item item, BranchItem branchTemplateItem)
 		{
 			string branchBasePath = branchTemplateItem.InnerItem.Paths.FullPath;
@@ -51,6 +85,8 @@ namespace BranchPresets
 				// note: queries and multiple item datasources are not supported
 				var renderingTargetItem = item.Database.GetItem(rendering.Datasource);
 
+                RewriteRulesDataSources(item, rendering, branchBasePath);
+
 				if (renderingTargetItem == null)
 					Log.Warn("Error while expanding branch template rendering datasources: data source {0} was not resolvable.".FormatWith(rendering.Datasource), this);
 
@@ -59,7 +95,14 @@ namespace BranchPresets
 					return RenderingActionResult.None;
 
 				var relativeRenderingPath = renderingTargetItem.Paths.FullPath.Substring(branchBasePath.Length).TrimStart('/');
-				relativeRenderingPath = relativeRenderingPath.Substring(relativeRenderingPath.IndexOf('/')); // we need to skip the "/$name" at the root of the branch children
+				
+                if (relativeRenderingPath =="$name")
+                {
+                    rendering.Datasource = item.ID.ToString();
+                    return RenderingActionResult.None;
+                }
+
+                relativeRenderingPath = relativeRenderingPath.Substring(relativeRenderingPath.IndexOf('/')); // we need to skip the "/$name" at the root of the branch children
 
 				var newTargetPath = item.Paths.FullPath + relativeRenderingPath;
 
